@@ -1,1 +1,286 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"name":"python","version":"3.10.14","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"kaggle":{"accelerator":"none","dataSources":[{"sourceId":4632560,"sourceType":"datasetVersion","datasetId":2695226}],"dockerImageVersionId":30786,"isInternetEnabled":true,"language":"python","sourceType":"notebook","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"# This Python 3 environment comes with many helpful analytics libraries installed\n# It is defined by the kaggle/python Docker image: https://github.com/kaggle/docker-python\n# For example, here's several helpful packages to load\n\nimport numpy as np # linear algebra\nimport pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)\n\n# Input data files are available in the read-only \"../input/\" directory\n# For example, running this (by clicking run or pressing Shift+Enter) will list all files under the input directory\n\nimport os\nfor dirname, _, filenames in os.walk('/kaggle/input'):\n    for filename in filenames:\n        print(os.path.join(dirname, filename))\n\n# You can write up to 20GB to the current directory (/kaggle/working/) that gets preserved as output when you create a version using \"Save & Run All\" \n# You can also write temporary files to /kaggle/temp/, but they won't be saved outside of the current session","metadata":{"_uuid":"8f2839f25d086af736a60e9eeb907d3b93b6e0e5","_cell_guid":"b1076dfc-b9ad-4769-8c92-a6c4dae69d19","execution":{"iopub.status.busy":"2024-10-22T12:30:24.122904Z","iopub.execute_input":"2024-10-22T12:30:24.123288Z","iopub.status.idle":"2024-10-22T12:30:24.498418Z","shell.execute_reply.started":"2024-10-22T12:30:24.123251Z","shell.execute_reply":"2024-10-22T12:30:24.497390Z"},"trusted":true},"execution_count":1,"outputs":[{"name":"stdout","text":"/kaggle/input/uncovering-enron-employees-secrets-exploring-the/validation.csv\n/kaggle/input/uncovering-enron-employees-secrets-exploring-the/train.csv\n/kaggle/input/uncovering-enron-employees-secrets-exploring-the/test.csv\n","output_type":"stream"}]},{"cell_type":"code","source":"import pandas as pd\nimport nltk\nfrom nltk.tokenize import word_tokenize\nfrom gensim.models import Word2Vec\nfrom sklearn.metrics.pairwise import cosine_similarity\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\n\n# Download NLTK data (only needed once)\nnltk.download('punkt')\n\n# Read the CSV file\ntry:\n    df = pd.read_csv('/kaggle/input/uncovering-enron-employees-secrets-exploring-the/train.csv', quotechar='\"', escapechar='\\\\', engine='python', on_bad_lines='skip')\n    print(\"CSV file read successfully!\")\nexcept pd.errors.ParserError as e:\n    print(f\"Error reading the CSV file: {e}\")\nexcept FileNotFoundError:\n    print(\"The specified CSV file was not found.\")\nexcept Exception as e:\n    print(f\"An unexpected error occurred: {e}\")\n\n# Check column names\nprint(\"Column names in the DataFrame:\", df.columns)\n\n# Print the first few rows to inspect the data\nprint(\"First few rows of the DataFrame:\")\nprint(df.head())\n\n# Expected column names\nexpected_columns = ['email_body', 'subject_line']\n\n# Check if the expected columns are in the DataFrame\nif all(column in df.columns for column in expected_columns):\n    # Handle missing values by filling them with an empty string or a placeholder\n    df['email_body'].fillna('', inplace=True)\n    df['subject_line'].fillna('', inplace=True)\n\n    # Preprocess: Tokenize email bodies\n    tokenized_bodies = [word_tokenize(body.lower()) for body in df['email_body']]\n\n    # Train Word2Vec model on the email bodies\n    if tokenized_bodies:\n        word2vec_model = Word2Vec(sentences=tokenized_bodies, vector_size=100, window=5, min_count=1, workers=4)\n\n        # Function to compute document embedding by averaging word embeddings\n        def get_document_embedding(doc, model):\n            if not isinstance(doc, str) or not doc.strip():\n                return np.zeros(model.vector_size)\n            words = word_tokenize(doc.lower())\n            word_embeddings = [model.wv[word] for word in words if word in model.wv]\n            if word_embeddings:\n                return np.mean(word_embeddings, axis=0)\n            else:\n                return np.zeros(model.vector_size)\n\n        # Split the data into training and test sets\n        train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)\n\n        # Reset indices\n        train_df = train_df.reset_index(drop=True)\n        test_df = test_df.reset_index(drop=True)\n\n        # Compute embeddings for all email bodies in the training set\n        train_body_embeddings = np.array([get_document_embedding(body, word2vec_model) for body in train_df['email_body']])\n\n        # Function to perform semantic search based on the email body\n        def semantic_search(query, model, body_embeddings, texts):\n            query_embedding = get_document_embedding(query, model)\n            similarities = cosine_similarity([query_embedding], body_embeddings)\n            best_match_idx = np.argmax(similarities)\n            return texts[best_match_idx], similarities[0, best_match_idx]\n\n        # Evaluate accuracy on the test set\n        def evaluate_accuracy(test_df, model, train_body_embeddings, train_texts):\n            similarities = []\n            for test_body, actual_subject in zip(test_df['email_body'], test_df['subject_line']):\n                matched_text, _ = semantic_search(test_body, model, train_body_embeddings, train_texts)\n                matched_subject = train_df.loc[train_df['email_body'] == matched_text, 'subject_line'].values[0]\n                actual_subject_embedding = get_document_embedding(actual_subject, model)\n                matched_subject_embedding = get_document_embedding(matched_subject, model)\n                similarity = cosine_similarity([actual_subject_embedding], [matched_subject_embedding])[0][0]\n                similarities.append(similarity)\n            return np.mean(similarities)\n\n        # Example email body for which to generate a subject line\n        new_email_body = \"Please review the attached documents and provide feedback by end of day\"\n\n        # Perform semantic search for the new email body to find the most similar existing email\n        matched_text, similarity_score = semantic_search(new_email_body, word2vec_model, train_body_embeddings, train_df['email_body'])\n\n        # Find the corresponding subject line for the matched email body\n        matched_subject = train_df.loc[train_df['email_body'] == matched_text, 'subject_line'].values[0]\n\n        print(\"Generated Subject Line:\", matched_subject)\n        print(\"Matched Email Body:\", matched_text)\n        print(\"Similarity Score:\", similarity_score)\n\n        # Evaluate accuracy on the test set\n        accuracy = evaluate_accuracy(test_df, word2vec_model, train_body_embeddings, train_df['email_body'])\n        print(\"Mean Cosine Similarity for Test Set:\", accuracy)\n    else:\n        print(\"Tokenized bodies are empty. Ensure the 'email_body' and 'subject_line' columns exist and contain data.\")\nelse:\n    print(f\"The expected columns {expected_columns} are not present in the DataFrame.\")\n","metadata":{"execution":{"iopub.status.busy":"2024-10-22T12:37:25.415005Z","iopub.execute_input":"2024-10-22T12:37:25.415870Z","iopub.status.idle":"2024-10-22T12:38:46.186848Z","shell.execute_reply.started":"2024-10-22T12:37:25.415812Z","shell.execute_reply":"2024-10-22T12:38:46.185775Z"},"trusted":true},"execution_count":16,"outputs":[{"name":"stdout","text":"[nltk_data] Downloading package punkt to /usr/share/nltk_data...\n[nltk_data]   Package punkt is already up-to-date!\nCSV file read successfully!\nColumn names in the DataFrame: Index(['email_body', 'subject_line'], dtype='object')\nFirst few rows of the DataFrame:\n                                          email_body             subject_line\n0  Greg/Phillip,  Attached is the Grande Communic...        Service Agreement\n1  Phillip & Keith  Attached is the first draw re...           Bishops Corner\n2  Your Internet Banking accounts are now setup a...         Internet Banking\n3  To our IBS Customers that are still hanging in...         Internet Banking\n4  Phillip Good Morning!\\nI hope you had a wonder...  SMEs for expert stories\n","output_type":"stream"},{"name":"stderr","text":"/tmp/ipykernel_235/1713059049.py:36: FutureWarning: A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.\nThe behavior will change in pandas 3.0. This inplace method will never work because the intermediate object on which we are setting values always behaves as a copy.\n\nFor example, when doing 'df[col].method(value, inplace=True)', try using 'df.method({col: value}, inplace=True)' or df[col] = df[col].method(value) instead, to perform the operation inplace on the original object.\n\n\n  df['email_body'].fillna('', inplace=True)\n/tmp/ipykernel_235/1713059049.py:37: FutureWarning: A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.\nThe behavior will change in pandas 3.0. This inplace method will never work because the intermediate object on which we are setting values always behaves as a copy.\n\nFor example, when doing 'df[col].method(value, inplace=True)', try using 'df.method({col: value}, inplace=True)' or df[col] = df[col].method(value) instead, to perform the operation inplace on the original object.\n\n\n  df['subject_line'].fillna('', inplace=True)\n","output_type":"stream"},{"name":"stdout","text":"Generated Subject Line: Comments on SoCal GIR Proposed Decision\nMatched Email Body: Attached for your review are Transwestern's comments to be filed tomorrow on the CPUC's Proposed Decision in the SoCal GIR proceeding.\nPlease review and comment to either Greg Porter or myself by the end of today.\nThanks gh\n\nSimilarity Score: 0.92694634\nMean Cosine Similarity for Test Set: 0.5289697640806016\n","output_type":"stream"}]}]}
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "38adede6",
+   "metadata": {
+    "_cell_guid": "b1076dfc-b9ad-4769-8c92-a6c4dae69d19",
+    "_uuid": "8f2839f25d086af736a60e9eeb907d3b93b6e0e5",
+    "execution": {
+     "iopub.execute_input": "2024-10-22T12:51:24.315844Z",
+     "iopub.status.busy": "2024-10-22T12:51:24.314919Z",
+     "iopub.status.idle": "2024-10-22T12:51:25.163905Z",
+     "shell.execute_reply": "2024-10-22T12:51:25.162738Z"
+    },
+    "papermill": {
+     "duration": 0.855571,
+     "end_time": "2024-10-22T12:51:25.166794",
+     "exception": false,
+     "start_time": "2024-10-22T12:51:24.311223",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "/kaggle/input/uncovering-enron-employees-secrets-exploring-the/validation.csv\n",
+      "/kaggle/input/uncovering-enron-employees-secrets-exploring-the/train.csv\n",
+      "/kaggle/input/uncovering-enron-employees-secrets-exploring-the/test.csv\n"
+     ]
+    }
+   ],
+   "source": [
+    "# This Python 3 environment comes with many helpful analytics libraries installed\n",
+    "# It is defined by the kaggle/python Docker image: https://github.com/kaggle/docker-python\n",
+    "# For example, here's several helpful packages to load\n",
+    "\n",
+    "import numpy as np # linear algebra\n",
+    "import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)\n",
+    "\n",
+    "# Input data files are available in the read-only \"../input/\" directory\n",
+    "# For example, running this (by clicking run or pressing Shift+Enter) will list all files under the input directory\n",
+    "\n",
+    "import os\n",
+    "for dirname, _, filenames in os.walk('/kaggle/input'):\n",
+    "    for filename in filenames:\n",
+    "        print(os.path.join(dirname, filename))\n",
+    "\n",
+    "# You can write up to 20GB to the current directory (/kaggle/working/) that gets preserved as output when you create a version using \"Save & Run All\" \n",
+    "# You can also write temporary files to /kaggle/temp/, but they won't be saved outside of the current session"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "a38de998",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2024-10-22T12:51:25.172813Z",
+     "iopub.status.busy": "2024-10-22T12:51:25.172321Z",
+     "iopub.status.idle": "2024-10-22T12:52:57.082284Z",
+     "shell.execute_reply": "2024-10-22T12:52:57.081198Z"
+    },
+    "papermill": {
+     "duration": 91.919419,
+     "end_time": "2024-10-22T12:52:57.088453",
+     "exception": false,
+     "start_time": "2024-10-22T12:51:25.169034",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "[nltk_data] Downloading package punkt to /usr/share/nltk_data...\n",
+      "[nltk_data]   Package punkt is already up-to-date!\n",
+      "CSV file read successfully!\n",
+      "Column names in the DataFrame: Index(['email_body', 'subject_line'], dtype='object')\n",
+      "First few rows of the DataFrame:\n",
+      "                                          email_body             subject_line\n",
+      "0  Greg/Phillip,  Attached is the Grande Communic...        Service Agreement\n",
+      "1  Phillip & Keith  Attached is the first draw re...           Bishops Corner\n",
+      "2  Your Internet Banking accounts are now setup a...         Internet Banking\n",
+      "3  To our IBS Customers that are still hanging in...         Internet Banking\n",
+      "4  Phillip Good Morning!\\nI hope you had a wonder...  SMEs for expert stories\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/tmp/ipykernel_17/1713059049.py:36: FutureWarning: A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.\n",
+      "The behavior will change in pandas 3.0. This inplace method will never work because the intermediate object on which we are setting values always behaves as a copy.\n",
+      "\n",
+      "For example, when doing 'df[col].method(value, inplace=True)', try using 'df.method({col: value}, inplace=True)' or df[col] = df[col].method(value) instead, to perform the operation inplace on the original object.\n",
+      "\n",
+      "\n",
+      "  df['email_body'].fillna('', inplace=True)\n",
+      "/tmp/ipykernel_17/1713059049.py:37: FutureWarning: A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.\n",
+      "The behavior will change in pandas 3.0. This inplace method will never work because the intermediate object on which we are setting values always behaves as a copy.\n",
+      "\n",
+      "For example, when doing 'df[col].method(value, inplace=True)', try using 'df.method({col: value}, inplace=True)' or df[col] = df[col].method(value) instead, to perform the operation inplace on the original object.\n",
+      "\n",
+      "\n",
+      "  df['subject_line'].fillna('', inplace=True)\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Generated Subject Line: Final PrePay documentation\n",
+      "Matched Email Body: Attached hereto are the final execution forms of the ENA/Chase Confirmation and the ENA/Mahonia Confirmation with Collateral Support Annex attached.\n",
+      "Please have the confirmations and the collateral support annex executed by the appropriate parties and fax the signature pages to Michael Garberding.\n",
+      "If you have any questions please call me at your earliest convenience.\n",
+      "Thanks, Anne.\n",
+      "\n",
+      "Similarity Score: 0.928867\n",
+      "Mean Cosine Similarity for Test Set: 0.5296271517727945\n"
+     ]
+    }
+   ],
+   "source": [
+    "import pandas as pd\n",
+    "import nltk\n",
+    "from nltk.tokenize import word_tokenize\n",
+    "from gensim.models import Word2Vec\n",
+    "from sklearn.metrics.pairwise import cosine_similarity\n",
+    "import numpy as np\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "\n",
+    "# Download NLTK data (only needed once)\n",
+    "nltk.download('punkt')\n",
+    "\n",
+    "# Read the CSV file\n",
+    "try:\n",
+    "    df = pd.read_csv('/kaggle/input/uncovering-enron-employees-secrets-exploring-the/train.csv', quotechar='\"', escapechar='\\\\', engine='python', on_bad_lines='skip')\n",
+    "    print(\"CSV file read successfully!\")\n",
+    "except pd.errors.ParserError as e:\n",
+    "    print(f\"Error reading the CSV file: {e}\")\n",
+    "except FileNotFoundError:\n",
+    "    print(\"The specified CSV file was not found.\")\n",
+    "except Exception as e:\n",
+    "    print(f\"An unexpected error occurred: {e}\")\n",
+    "\n",
+    "# Check column names\n",
+    "print(\"Column names in the DataFrame:\", df.columns)\n",
+    "\n",
+    "# Print the first few rows to inspect the data\n",
+    "print(\"First few rows of the DataFrame:\")\n",
+    "print(df.head())\n",
+    "\n",
+    "# Expected column names\n",
+    "expected_columns = ['email_body', 'subject_line']\n",
+    "\n",
+    "# Check if the expected columns are in the DataFrame\n",
+    "if all(column in df.columns for column in expected_columns):\n",
+    "    # Handle missing values by filling them with an empty string or a placeholder\n",
+    "    df['email_body'].fillna('', inplace=True)\n",
+    "    df['subject_line'].fillna('', inplace=True)\n",
+    "\n",
+    "    # Preprocess: Tokenize email bodies\n",
+    "    tokenized_bodies = [word_tokenize(body.lower()) for body in df['email_body']]\n",
+    "\n",
+    "    # Train Word2Vec model on the email bodies\n",
+    "    if tokenized_bodies:\n",
+    "        word2vec_model = Word2Vec(sentences=tokenized_bodies, vector_size=100, window=5, min_count=1, workers=4)\n",
+    "\n",
+    "        # Function to compute document embedding by averaging word embeddings\n",
+    "        def get_document_embedding(doc, model):\n",
+    "            if not isinstance(doc, str) or not doc.strip():\n",
+    "                return np.zeros(model.vector_size)\n",
+    "            words = word_tokenize(doc.lower())\n",
+    "            word_embeddings = [model.wv[word] for word in words if word in model.wv]\n",
+    "            if word_embeddings:\n",
+    "                return np.mean(word_embeddings, axis=0)\n",
+    "            else:\n",
+    "                return np.zeros(model.vector_size)\n",
+    "\n",
+    "        # Split the data into training and test sets\n",
+    "        train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)\n",
+    "\n",
+    "        # Reset indices\n",
+    "        train_df = train_df.reset_index(drop=True)\n",
+    "        test_df = test_df.reset_index(drop=True)\n",
+    "\n",
+    "        # Compute embeddings for all email bodies in the training set\n",
+    "        train_body_embeddings = np.array([get_document_embedding(body, word2vec_model) for body in train_df['email_body']])\n",
+    "\n",
+    "        # Function to perform semantic search based on the email body\n",
+    "        def semantic_search(query, model, body_embeddings, texts):\n",
+    "            query_embedding = get_document_embedding(query, model)\n",
+    "            similarities = cosine_similarity([query_embedding], body_embeddings)\n",
+    "            best_match_idx = np.argmax(similarities)\n",
+    "            return texts[best_match_idx], similarities[0, best_match_idx]\n",
+    "\n",
+    "        # Evaluate accuracy on the test set\n",
+    "        def evaluate_accuracy(test_df, model, train_body_embeddings, train_texts):\n",
+    "            similarities = []\n",
+    "            for test_body, actual_subject in zip(test_df['email_body'], test_df['subject_line']):\n",
+    "                matched_text, _ = semantic_search(test_body, model, train_body_embeddings, train_texts)\n",
+    "                matched_subject = train_df.loc[train_df['email_body'] == matched_text, 'subject_line'].values[0]\n",
+    "                actual_subject_embedding = get_document_embedding(actual_subject, model)\n",
+    "                matched_subject_embedding = get_document_embedding(matched_subject, model)\n",
+    "                similarity = cosine_similarity([actual_subject_embedding], [matched_subject_embedding])[0][0]\n",
+    "                similarities.append(similarity)\n",
+    "            return np.mean(similarities)\n",
+    "\n",
+    "        # Example email body for which to generate a subject line\n",
+    "        new_email_body = \"Please review the attached documents and provide feedback by end of day\"\n",
+    "\n",
+    "        # Perform semantic search for the new email body to find the most similar existing email\n",
+    "        matched_text, similarity_score = semantic_search(new_email_body, word2vec_model, train_body_embeddings, train_df['email_body'])\n",
+    "\n",
+    "        # Find the corresponding subject line for the matched email body\n",
+    "        matched_subject = train_df.loc[train_df['email_body'] == matched_text, 'subject_line'].values[0]\n",
+    "\n",
+    "        print(\"Generated Subject Line:\", matched_subject)\n",
+    "        print(\"Matched Email Body:\", matched_text)\n",
+    "        print(\"Similarity Score:\", similarity_score)\n",
+    "\n",
+    "        # Evaluate accuracy on the test set\n",
+    "        accuracy = evaluate_accuracy(test_df, word2vec_model, train_body_embeddings, train_df['email_body'])\n",
+    "        print(\"Mean Cosine Similarity for Test Set:\", accuracy)\n",
+    "    else:\n",
+    "        print(\"Tokenized bodies are empty. Ensure the 'email_body' and 'subject_line' columns exist and contain data.\")\n",
+    "else:\n",
+    "    print(f\"The expected columns {expected_columns} are not present in the DataFrame.\")\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "datasetId": 2695226,
+     "sourceId": 4632560,
+     "sourceType": "datasetVersion"
+    }
+   ],
+   "dockerImageVersionId": 30786,
+   "isGpuEnabled": false,
+   "isInternetEnabled": true,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.14"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 96.404816,
+   "end_time": "2024-10-22T12:52:58.114334",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2024-10-22T12:51:21.709518",
+   "version": "2.6.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
